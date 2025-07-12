@@ -5,8 +5,46 @@ import pdfplumber
 import pytesseract
 from PIL import Image
 import io
+import hashlib
 
 st.set_page_config(layout="wide")
+
+# --- USER LOGIN SYSTEM ---
+users = {
+    'admin': {'password': 'admin123', 'role': 'admin'},
+    'user1': {'password': 'user123', 'role': 'general'},
+    'user2': {'password': 'demo123', 'role': 'general'}
+}
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def login(username, password):
+    user = users.get(username)
+    if user and hash_password(password) == hash_password(user['password']):
+        return user['role']
+    return None
+
+if 'role' not in st.session_state:
+    st.session_state['role'] = None
+if 'extracted_data' not in st.session_state:
+    st.session_state['extracted_data'] = pd.DataFrame()
+
+if st.session_state['role'] is None:
+    st.title("🔐 Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        role = login(username, password)
+        if role:
+            st.session_state['role'] = role
+            st.success(f"Logged in as {role.upper()}")
+        else:
+            st.error("Invalid credentials")
+    st.stop()
+
+st.title("📦 Vendor Price Matcher")
+extract_tab, match_tab = st.tabs(["1️⃣ Extractor", "2️⃣ Matcher"])
 
 # --- Utility Functions ---
 def extract_items_from_pdf(file):
@@ -47,14 +85,10 @@ def fuzzy_match(vendor_name, choices, threshold=75):
     match, score = process.extractOne(vendor_name, choices, scorer=fuzz.token_sort_ratio)
     return (match, score) if score >= threshold else (None, score)
 
-# --- Streamlit Interface ---
-st.title("🧾 Step 1: Vendor File Extractor")
+def load_google_sheet_csv(csv_url):
+    return pd.read_csv(csv_url)
 
-if 'extracted_data' not in st.session_state:
-    st.session_state['extracted_data'] = pd.DataFrame()
-
-extract_tab, match_tab = st.tabs(["1️⃣ Extractor", "2️⃣ Matcher"])
-
+# --- Extractor Tab ---
 with extract_tab:
     st.header("Upload Vendor Price Sheet (PDF or Image)")
     vendor_files = st.file_uploader("Upload vendor files", type=["pdf", "jpeg", "jpg", "png"], accept_multiple_files=True)
@@ -76,15 +110,26 @@ with extract_tab:
         st.subheader("Extracted Items")
         st.dataframe(combined_vendor_df)
 
+# --- Matcher Tab ---
 with match_tab:
-    st.header("Upload Master Stock Sheet")
-    stock_file = st.file_uploader("Upload Master Stock Sheet (Excel)", type=["xlsx"], key="stock")
+    st.header("Master Stock Sheet")
 
-    if stock_file and not st.session_state['extracted_data'].empty:
-        stock_df = pd.read_excel(stock_file, sheet_name='STOCK')
-        stock_items = stock_df[['Item', 'Balance Cases  after minus order cases']].copy()
-        stock_items.rename(columns={'Balance Cases  after minus order cases': 'Stock (Balance Cases)'}, inplace=True)
+    if st.session_state['role'] == 'admin':
+        csv_url = st.text_input("Paste public Google Sheet CSV link")
+    else:
+        csv_url = "https://docs.google.com/spreadsheets/d/e/XXXX/pub?output=csv"  # Replace with actual link
 
+    try:
+        stock_df = load_google_sheet_csv(csv_url)
+        stock_df = stock_df[['Item', 'Balance Cases  after minus order cases']]
+        stock_df.rename(columns={'Balance Cases  after minus order cases': 'Stock (Balance Cases)'}, inplace=True)
+    except Exception as e:
+        st.error(f"Failed to load master sheet: {e}")
+        st.stop()
+
+    stock_items = stock_df
+
+    if not st.session_state['extracted_data'].empty:
         matched = []
         unmatched = []
 
@@ -122,5 +167,5 @@ with match_tab:
 
         st.download_button("Download Matched Items", matched_df.to_csv(index=False), "matched_items.csv")
         st.download_button("Download Unmatched Items", unmatched_df.to_csv(index=False), "unmatched_items.csv")
-    elif st.session_state['extracted_data'].empty:
-        st.warning("Please upload and extract vendor data in Step 1 first.")
+    else:
+        st.warning("Please extract vendor data in Step 1 first.")
